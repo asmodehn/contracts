@@ -460,25 +460,7 @@ def condition(description, predicate, precondition=False, postcondition=False, i
     def require(f):
         wrapped = get_wrapped_func(f)
 
-        if isfunction(f):
-            @wraps(f)
-            def inner(*args, **kwargs):
-                rargs = build_call(f, *args, **kwargs) if not instance else args[0]
-
-                if precondition:
-                    assert predicate(rargs), description
-
-                result = f(*args, **kwargs)
-
-                if instance:
-                    assert predicate(rargs), description
-
-                elif postcondition:
-                    assert predicate(rargs, result), description
-
-                return result
-
-        elif iscoroutinefunction(f):
+        if iscoroutinefunction(f):
             @wraps(f)
             async def inner(*args, **kwargs):
                 rargs = build_call(f, *args, **kwargs) if not instance else args[0]
@@ -504,6 +486,26 @@ def condition(description, predicate, precondition=False, postcondition=False, i
                         assert predicate(rargs, result), description
 
                 return result
+
+        elif isfunction(f):
+            @wraps(f)
+            def inner(*args, **kwargs):
+                rargs = build_call(f, *args, **kwargs) if not instance else args[0]
+
+                if precondition:
+                    assert predicate(rargs), description
+
+                result = f(*args, **kwargs)
+
+                if instance:
+                    assert predicate(rargs), description
+
+                elif postcondition:
+                    assert predicate(rargs, result), description
+
+                return result
+
+
         else:
             raise NotImplementedError  # unhandled case ?
 
