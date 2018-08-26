@@ -128,33 +128,6 @@ All of the various calling conventions of Python are supported:
     >>> func(**args)
     >>> func(10)
 
-The same also applies to async functions (aka coroutines functions):
-    >>> import asyncio
-    >>> @require("`a` is an integer", lambda args: isinstance(args.a, int))
-    ... @require("`b` is a string", lambda args: isinstance(args.b, str))
-    ... @require("every member of `c` should be a boolean",
-    ...          lambda args: all(isinstance(x, bool) for x in args.c))
-    ... async def func(a, b="Foo", *c):
-    ...     await asyncio.sleep(1)
-
-    >>> asyncio.get_event_loop().run_until_complete(func( 1, "foo", True, True, False))
-
-Predicate would usually be synchronous function (as we need to enforce the sequence 'pre -> run -> post' for contracts)
-however asynchronous functions are also supported, but will be run sequentially:
-
-    >>> async def coropred_aisint(e):
-    ...     await asyncio.sleep(1)
-    ...     return isinstance(getattr(e, 'a'), int)
-    >>> @require("`a` is an integer", coropred_aisint)
-    ... @require("`b` is a string", lambda args: isinstance(args.b, str))
-    ... @require("every member of `c` should be a boolean",
-    ...          lambda args: all(isinstance(x, bool) for x in args.c))
-    ... async def func(a, b="Foo", *c):
-    ...     await asyncio.sleep(1)
-
-    >>> asyncio.get_event_loop().run_until_complete(func( 1, "foo", True, True, False))
-
-
 A common contract is to validate the types of arguments. To that end,
 there is an additional decorator, `types`, that can be used
 to validate arguments' types:
@@ -386,6 +359,40 @@ You should have received a copy of the GNU Lesser General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import sys
+if sys.version_info > (3, 5):
+    __doc__ += """
+Python3 Enhancemnts
+===================
+
+Contracts are also usable with async functions (aka coroutines functions):
+    >>> import asyncio
+    >>> @require("`a` is an integer", lambda args: isinstance(args.a, int))
+    ... @require("`b` is a string", lambda args: isinstance(args.b, str))
+    ... @require("every member of `c` should be a boolean",
+    ...          lambda args: all(isinstance(x, bool) for x in args.c))
+    ... async def func(a, b="Foo", *c):
+    ...     await asyncio.sleep(1)
+
+    >>> asyncio.get_event_loop().run_until_complete(func( 1, "foo", True, True, False))
+
+Predicate would usually be synchronous function (as we need to enforce the sequence 'pre -> run -> post' for contracts)
+however asynchronous functions are also supported, but will be run sequentially:
+
+    >>> async def coropred_aisint(e):
+    ...     await asyncio.sleep(1)
+    ...     return isinstance(getattr(e, 'a'), int)
+    >>> @require("`a` is an integer", coropred_aisint)
+    ... @require("`b` is a string", lambda args: isinstance(args.b, str))
+    ... @require("every member of `c` should be a boolean",
+    ...          lambda args: all(isinstance(x, bool) for x in args.c))
+    ... async def func(a, b="Foo", *c):
+    ...     await asyncio.sleep(1)
+
+    >>> asyncio.get_event_loop().run_until_complete(func( 1, "foo", True, True, False))
+
+"""
+
 __all__ = ["ensure", "invariant", "require", "transform", "rewrite"]
 __author__ = "Rob King"
 __copyright__ = "Copyright (C) 2015-2016 Rob King"
@@ -396,7 +403,7 @@ __status__ = "Alpha"
 
 from collections import namedtuple
 from functools import wraps
-from inspect import isfunction, ismethod, iscoroutinefunction
+from inspect import isfunction, ismethod
 
 try:
     from inspect import getfullargspec
@@ -460,54 +467,65 @@ def condition(description, predicate, precondition=False, postcondition=False, i
     def require(f):
         wrapped = get_wrapped_func(f)
 
-        if iscoroutinefunction(f):
-            @wraps(f)
-            async def inner(*args, **kwargs):
-                rargs = build_call(f, *args, **kwargs) if not instance else args[0]
+        @wraps(f)
+        def inner(*args, **kwargs):
+            rargs = build_call(f, *args, **kwargs) if not instance else args[0]
 
-                if precondition:
-                    if iscoroutinefunction(predicate):
-                        assert await predicate(rargs), description
-                    else:
-                        assert predicate(rargs), description
+            if precondition:
+                assert predicate(rargs), description
 
-                result = await f(*args, **kwargs)
+            result = f(*args, **kwargs)
 
-                if instance:
-                    if iscoroutinefunction(predicate):
-                        assert await predicate(rargs), description
-                    else:
-                        assert predicate(rargs), description
+            if instance:
+                assert predicate(rargs), description
 
-                elif postcondition:
-                    if iscoroutinefunction(predicate):
-                        assert await predicate(rargs, result), description
-                    else:
-                        assert predicate(rargs, result), description
+            elif postcondition:
+                assert predicate(rargs, result), description
 
-                return result
+            return result
 
-        elif isfunction(f):
-            @wraps(f)
-            def inner(*args, **kwargs):
-                rargs = build_call(f, *args, **kwargs) if not instance else args[0]
+        if sys.version_info > (3, 4):
+            # Dynamic execution for python2 to ignore the syntax in this part of the code
 
-                if precondition:
-                    assert predicate(rargs), description
+            # importing modules we need for the closure
+            from inspect import iscoroutinefunction
 
-                result = f(*args, **kwargs)
+            # locs is a new dict to allow modification
+            locs = globals().copy()  # We need to merge it with globals to prevent assuming code is inside class
+            locs.update(locals())    # We need to add locals to keep proper values for the closure
 
-                if instance:
-                    assert predicate(rargs), description
-
-                elif postcondition:
-                    assert predicate(rargs, result), description
-
-                return result
-
-
-        else:
-            raise NotImplementedError  # unhandled case ?
+            # If we have a corountine function, we override inner
+            locs.setdefault('iscoroutinefunction', iscoroutinefunction)
+            exec("""
+if iscorountinefunction(f):
+    @wraps(f)
+    async def inner_async(*args, **kwargs):
+        rargs = build_call(f, *args, **kwargs) if not instance else args[0]
+    
+        if precondition:
+            if iscoroutinefunction(predicate):
+                assert await predicate(rargs), description
+            else:
+                assert predicate(rargs), description
+    
+        result = await f(*args, **kwargs)
+    
+        if instance:
+            if iscoroutinefunction(predicate):
+                assert await predicate(rargs), description
+            else:
+                assert predicate(rargs), description
+    
+        elif postcondition:
+            if iscoroutinefunction(predicate):
+                assert await predicate(rargs, result), description
+            else:
+                assert predicate(rargs, result), description
+    
+        return result
+            """, locs)
+            if hasattr(locs, 'inner_async'):
+                inner = locs.get('inner_async')  # retrieve inner definition from locs
 
         inner.__contract_wrapped_func__ = wrapped
         return inner
